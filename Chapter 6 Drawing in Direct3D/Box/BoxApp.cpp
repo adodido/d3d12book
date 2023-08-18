@@ -22,9 +22,27 @@ struct Vertex
     XMFLOAT4 Color;
 };
 
+struct PassConstants
+{
+    XMFLOAT4X4 ViewProj = MathHelper::Identity4x4();
+    FLOAT gTime;
+};
+
 struct ObjectConstants
 {
-    XMFLOAT4X4 WorldViewProj = MathHelper::Identity4x4();
+    XMFLOAT4X4 World = MathHelper::Identity4x4();
+};
+
+struct RenderItem
+{
+    XMFLOAT4X4 World = MathHelper::Identity4x4();
+    std::vector<Vertex> vertices;
+    std::vector<std::uint16_t> indices;
+    
+    MeshGeometry* Geo = nullptr;
+    UINT IndexCount = 0;
+    UINT StartIndexLocation = 0;
+    int BaseVertexLocation = 0;
 };
 
 class BoxApp : public D3DApp
@@ -51,6 +69,7 @@ private:
     void BuildRootSignature();
     void BuildShadersAndInputLayout();
     void BuildBoxGeometry();
+    void BuildRenderItems();
     void BuildPSO();
 
 private:
@@ -59,8 +78,9 @@ private:
     ComPtr<ID3D12DescriptorHeap> mCbvHeap = nullptr;
 
     std::unique_ptr<UploadBuffer<ObjectConstants>> mObjectCB = nullptr;
+    std::unique_ptr<UploadBuffer<PassConstants>> mPassCB = nullptr;
 
-	std::unique_ptr<MeshGeometry> mBoxGeo = nullptr;
+    std::unique_ptr<MeshGeometry> mBoxGeo = nullptr;
 
     ComPtr<ID3DBlob> mvsByteCode = nullptr;
     ComPtr<ID3DBlob> mpsByteCode = nullptr;
@@ -78,6 +98,7 @@ private:
     float mRadius = 5.0f;
 
     POINT mLastMousePos;
+    std::vector<std::unique_ptr<RenderItem>> mAllItems;
 };
 
 int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE prevInstance,
@@ -120,11 +141,12 @@ bool BoxApp::Initialize()
     // Reset the command list to prep for initialization commands.
     ThrowIfFailed(mCommandList->Reset(mDirectCmdListAlloc.Get(), nullptr));
  
-    BuildDescriptorHeaps();
-	BuildConstantBuffers();
-    BuildRootSignature();
     BuildShadersAndInputLayout();
     BuildBoxGeometry();
+    BuildRenderItems();
+    BuildRootSignature();
+    BuildDescriptorHeaps();
+    BuildConstantBuffers();
     BuildPSO();
 
     // Execute the initialization commands.
@@ -162,14 +184,23 @@ void BoxApp::Update(const GameTimer& gt)
     XMMATRIX view = XMMatrixLookAtLH(pos, target, up);
     XMStoreFloat4x4(&mView, view);
 
-    XMMATRIX world = XMLoadFloat4x4(&mWorld);
     XMMATRIX proj = XMLoadFloat4x4(&mProj);
-    XMMATRIX worldViewProj = world*view*proj;
+    XMMATRIX ViewProj = view*proj;
 
-	// Update the constant buffer with the latest worldViewProj matrix.
-	ObjectConstants objConstants;
-    XMStoreFloat4x4(&objConstants.WorldViewProj, XMMatrixTranspose(worldViewProj));
-    mObjectCB->CopyData(0, objConstants);
+	// Update Pass Buffer
+    PassConstants passConstants;
+    XMStoreFloat4x4(&passConstants.ViewProj, XMMatrixTranspose(ViewProj));
+    passConstants.gTime = gt.TotalTime();
+    mPassCB->CopyData(0, passConstants);
+
+    // TODO Update ObjectBuffer
+    for (int i = 0; i < mAllItems.size(); i++)
+    {
+        ObjectConstants objConstants;
+        XMMATRIX world = XMLoadFloat4x4(&mAllItems[i]->World);
+        XMStoreFloat4x4(&objConstants.World, XMMatrixTranspose(world));
+        mObjectCB->CopyData(i, objConstants);
+    }
 }
 
 void BoxApp::Draw(const GameTimer& gt)
@@ -201,15 +232,27 @@ void BoxApp::Draw(const GameTimer& gt)
 
 	mCommandList->SetGraphicsRootSignature(mRootSignature.Get());
 
-	mCommandList->IASetVertexBuffers(0, 1, &mBoxGeo->VertexBufferView());
-	mCommandList->IASetIndexBuffer(&mBoxGeo->IndexBufferView());
-    mCommandList->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-    
     mCommandList->SetGraphicsRootDescriptorTable(0, mCbvHeap->GetGPUDescriptorHandleForHeapStart());
 
-    mCommandList->DrawIndexedInstanced(
-		mBoxGeo->DrawArgs["box"].IndexCount, 
-		1, 0, 0, 0);
+    // Render All Items
+    for (int i = 0; i < mAllItems.size(); i++)
+    {
+        mCommandList->IASetVertexBuffers(0, 1, &mAllItems[i]->Geo->VertexBufferView());
+        mCommandList->IASetIndexBuffer(&mAllItems[i]->Geo->IndexBufferView());
+        mCommandList->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+
+        auto gpuAddress = CD3DX12_GPU_DESCRIPTOR_HANDLE(mCbvHeap->GetGPUDescriptorHandleForHeapStart());
+        gpuAddress.Offset(i+1, mCbvSrvUavDescriptorSize);
+        mCommandList->SetGraphicsRootDescriptorTable(1, gpuAddress);
+
+        mCommandList->DrawIndexedInstanced(
+            mAllItems[i]->IndexCount,
+            1, 
+            mAllItems[i]->StartIndexLocation,
+            mAllItems[i]->BaseVertexLocation,
+            0);
+    }
+
 	
     // Indicate a state transition on the resource usage.
 	mCommandList->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::Transition(CurrentBackBuffer(),
@@ -280,7 +323,7 @@ void BoxApp::OnMouseMove(WPARAM btnState, int x, int y)
 void BoxApp::BuildDescriptorHeaps()
 {
     D3D12_DESCRIPTOR_HEAP_DESC cbvHeapDesc;
-    cbvHeapDesc.NumDescriptors = 1;
+    cbvHeapDesc.NumDescriptors = 1 + mAllItems.size();
     cbvHeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
     cbvHeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
 	cbvHeapDesc.NodeMask = 0;
@@ -290,22 +333,41 @@ void BoxApp::BuildDescriptorHeaps()
 
 void BoxApp::BuildConstantBuffers()
 {
-	mObjectCB = std::make_unique<UploadBuffer<ObjectConstants>>(md3dDevice.Get(), 1, true);
+	mObjectCB = std::make_unique<UploadBuffer<ObjectConstants>>(md3dDevice.Get(), mAllItems.size(), true);
+    mPassCB = std::make_unique<UploadBuffer<PassConstants>>(md3dDevice.Get(), 1, true);
+    
+    // PassCB放前面
+    UINT passCBByteSize = d3dUtil::CalcConstantBufferByteSize(sizeof(PassConstants));
 
+    D3D12_GPU_VIRTUAL_ADDRESS cbAddress0 = mPassCB->Resource()->GetGPUVirtualAddress();
+    D3D12_CONSTANT_BUFFER_VIEW_DESC cbvDesc;
+    cbvDesc.BufferLocation = cbAddress0;
+    cbvDesc.SizeInBytes = passCBByteSize;
+
+    auto handle = CD3DX12_CPU_DESCRIPTOR_HANDLE(mCbvHeap->GetCPUDescriptorHandleForHeapStart());
+    md3dDevice->CreateConstantBufferView(
+        &cbvDesc,
+        handle);
+
+
+    // ObjectCB往后偏移
 	UINT objCBByteSize = d3dUtil::CalcConstantBufferByteSize(sizeof(ObjectConstants));
 
-	D3D12_GPU_VIRTUAL_ADDRESS cbAddress = mObjectCB->Resource()->GetGPUVirtualAddress();
-    // Offset to the ith object constant buffer in the buffer.
-    int boxCBufIndex = 0;
-	cbAddress += boxCBufIndex*objCBByteSize;
+    for (int i = 0; i < mAllItems.size(); i++)
+    {
+        D3D12_GPU_VIRTUAL_ADDRESS cbAddress1 = mObjectCB->Resource()->GetGPUVirtualAddress();
+        cbAddress1 += i * objCBByteSize;
 
-	D3D12_CONSTANT_BUFFER_VIEW_DESC cbvDesc;
-	cbvDesc.BufferLocation = cbAddress;
-	cbvDesc.SizeInBytes = d3dUtil::CalcConstantBufferByteSize(sizeof(ObjectConstants));
+        D3D12_CONSTANT_BUFFER_VIEW_DESC cbvDesc1;
+        cbvDesc1.BufferLocation = cbAddress1;
+        cbvDesc1.SizeInBytes = objCBByteSize;
 
-	md3dDevice->CreateConstantBufferView(
-		&cbvDesc,
-		mCbvHeap->GetCPUDescriptorHandleForHeapStart());
+        auto handle = CD3DX12_CPU_DESCRIPTOR_HANDLE(mCbvHeap->GetCPUDescriptorHandleForHeapStart());
+        handle.Offset(i+1,mCbvSrvUavDescriptorSize);
+        md3dDevice->CreateConstantBufferView(&cbvDesc1, handle);
+
+    }
+
 }
 
 void BoxApp::BuildRootSignature()
@@ -317,15 +379,17 @@ void BoxApp::BuildRootSignature()
 	// thought of as defining the function signature.  
 
 	// Root parameter can be a table, root descriptor or root constants.
-	CD3DX12_ROOT_PARAMETER slotRootParameter[1];
+	CD3DX12_ROOT_PARAMETER slotRootParameter[2];
 
 	// Create a single descriptor table of CBVs.
-	CD3DX12_DESCRIPTOR_RANGE cbvTable;
-	cbvTable.Init(D3D12_DESCRIPTOR_RANGE_TYPE_CBV, 1, 0);
-	slotRootParameter[0].InitAsDescriptorTable(1, &cbvTable);
+	CD3DX12_DESCRIPTOR_RANGE cbvTable0,cbvTable1;
+	cbvTable0.Init(D3D12_DESCRIPTOR_RANGE_TYPE_CBV, 1, 0);
+    cbvTable1.Init(D3D12_DESCRIPTOR_RANGE_TYPE_CBV, mAllItems.size(), 1);
+	slotRootParameter[0].InitAsDescriptorTable(1, &cbvTable0);
+    slotRootParameter[1].InitAsDescriptorTable(1, &cbvTable1);
 
 	// A root signature is an array of root parameters.
-	CD3DX12_ROOT_SIGNATURE_DESC rootSigDesc(1, slotRootParameter, 0, nullptr, 
+	CD3DX12_ROOT_SIGNATURE_DESC rootSigDesc(2, slotRootParameter, 0, nullptr, 
 		D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT);
 
 	// create a root signature with a single slot which points to a descriptor range consisting of a single constant buffer
@@ -425,12 +489,27 @@ void BoxApp::BuildBoxGeometry()
 	mBoxGeo->IndexFormat = DXGI_FORMAT_R16_UINT;
 	mBoxGeo->IndexBufferByteSize = ibByteSize;
 
-	SubmeshGeometry submesh;
-	submesh.IndexCount = (UINT)indices.size();
-	submesh.StartIndexLocation = 0;
-	submesh.BaseVertexLocation = 0;
+    SubmeshGeometry boxSubmesh;
+    boxSubmesh.IndexCount = (UINT)indices.size();
+    boxSubmesh.StartIndexLocation = 0;
+    boxSubmesh.BaseVertexLocation = 0;
 
-	mBoxGeo->DrawArgs["box"] = submesh;
+	mBoxGeo->DrawArgs["box"] = boxSubmesh;
+}
+
+void BoxApp::BuildRenderItems()
+{
+    for (int i = 0; i < 3; ++i) {
+        auto boxitem = std::make_unique<RenderItem>();
+        XMMATRIX boxWorld = XMMatrixTranslation(-5.0f, 1.5f, -10.0f + i * 5.0f);
+        XMStoreFloat4x4(&boxitem->World, boxWorld);
+        boxitem->Geo = mBoxGeo.get();
+        boxitem->IndexCount = boxitem->Geo->DrawArgs["box"].IndexCount;
+        boxitem->StartIndexLocation = boxitem->Geo->DrawArgs["box"].StartIndexLocation;
+        boxitem->BaseVertexLocation = boxitem->Geo->DrawArgs["box"].BaseVertexLocation;
+        mAllItems.push_back(std::move(boxitem));
+    }
+
 }
 
 void BoxApp::BuildPSO()

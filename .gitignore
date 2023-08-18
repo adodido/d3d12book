@@ -45,3 +45,20 @@ $RECYCLE.BIN/
 Network Trash Folder
 Temporary Items
 .apdisk
+*.pdb
+*.idb
+*.obj
+*.txt
+*.tlog
+*.log
+*.exe
+*.recipe
+*.ilk
+*.ipch
+*.db
+*.vsidx
+*.lock
+*.vcxproj
+Chapter 6 Drawing in Direct3D/Box/
+Chapter 7 Drawing in Direct3D Part II/Shapes/.vs/Shapes/v17/.suo
+Chapter 7 Drawing in Direct3D Part II/Shapes/Shapes.vcxproj
