@@ -62,3 +62,12 @@ Temporary Items
 Chapter 6 Drawing in Direct3D/Box/
 Chapter 7 Drawing in Direct3D Part II/Shapes/.vs/Shapes/v17/.suo
 Chapter 7 Drawing in Direct3D Part II/Shapes/Shapes.vcxproj
+Chapter 7 Drawing in Direct3D Part II/LandAndWaves/.vs/LandAndWaves/v17/.suo
+*.ipdb
+*.iobj
+*.db-shm
+*.db-wal
+*.opendb
+*.user
+*.vcxproj
+*.vcxproj

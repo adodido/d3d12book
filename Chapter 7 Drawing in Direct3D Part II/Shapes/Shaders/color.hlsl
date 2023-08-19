@@ -4,9 +4,29 @@
 // Transforms and colors geometry.
 //***************************************************************************************
  
+//cbuffer cbPerObject : register(b0)
+//{
+//	float4x4 gWorld; 
+//};
+
 cbuffer cbPerObject : register(b0)
 {
-	float4x4 gWorld; 
+    float w11;
+    float w12;
+    float w13;
+    float w14;
+    float w21;
+    float w22;
+    float w23;
+    float w24;
+    float w31;
+    float w32;
+    float w33;
+    float w34;
+    float w41;
+    float w42;
+    float w43;
+    float w44;
 };
 
 cbuffer cbPass : register(b1)
@@ -42,6 +62,11 @@ struct VertexOut
 VertexOut VS(VertexIn vin)
 {
 	VertexOut vout;
+    
+    float4x4 gWorld = float4x4(w11,w12,w13,w14,
+                               w21,w22,w23,w24,
+                               w31,w32,w33,w34,
+                               w41,w42,w43,w44);
 	
 	// Transform to homogeneous clip space.
     float4 posW = mul(float4(vin.PosL, 1.0f), gWorld);
