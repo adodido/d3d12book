@@ -116,6 +116,10 @@ VertexOut VS(VertexIn vin)
 
 float4 PS(VertexOut pin) : SV_Target
 {
+#ifdef DEPTH_COMPLEXITY
+    return float4(1.f, 1.f, 1.f, 1.f);
+#endif
+    
     float4 diffuseAlbedo = gDiffuseMap.Sample(gsamAnisotropicWrap, pin.TexC) * gDiffuseAlbedo;
 	
 #ifdef ALPHA_TEST
