@@ -274,7 +274,7 @@ void BlendApp::Draw(const GameTimer& gt)
 		D3D12_RESOURCE_STATE_PRESENT, D3D12_RESOURCE_STATE_RENDER_TARGET));
 
     // Clear the back buffer and depth buffer.
-    mCommandList->ClearRenderTargetView(CurrentBackBufferView(), (float*)&mMainPassCB.FogColor, 0, nullptr);
+    mCommandList->ClearRenderTargetView(CurrentBackBufferView(), DirectX::Colors::Black/*(float*)&mMainPassCB.FogColor*/, 0, nullptr);
     mCommandList->ClearDepthStencilView(DepthStencilView(), D3D12_CLEAR_FLAG_DEPTH | D3D12_CLEAR_FLAG_STENCIL, 1.0f, 0, 0, nullptr);
 
     // Specify the buffers we are going to render to.
@@ -288,6 +288,9 @@ void BlendApp::Draw(const GameTimer& gt)
 	auto passCB = mCurrFrameResource->PassCB->Resource();
 	mCommandList->SetGraphicsRootConstantBufferView(2, passCB->GetGPUVirtualAddress());
 
+	// start - calc depth complexity in stencil buffer
+	mCommandList->OMSetStencilRef(0);
+	mCommandList->SetPipelineState(mPSOs["opaque"].Get());
     DrawRenderItems(mCommandList.Get(), mRitemLayer[(int)RenderLayer::Opaque]);
 
 	mCommandList->SetPipelineState(mPSOs["alphaTested"].Get());
@@ -295,6 +298,33 @@ void BlendApp::Draw(const GameTimer& gt)
 
 	mCommandList->SetPipelineState(mPSOs["transparent"].Get());
 	DrawRenderItems(mCommandList.Get(), mRitemLayer[(int)RenderLayer::Transparent]);
+	// end
+
+	// start - render depth complexity to back buffer
+	mCommandList->OMSetStencilRef(1);
+	mCommandList->SetPipelineState(mPSOs["depthComplexity0"].Get());
+	DrawRenderItems(mCommandList.Get(), mRitemLayer[(int)RenderLayer::Opaque]);
+	DrawRenderItems(mCommandList.Get(), mRitemLayer[(int)RenderLayer::AlphaTested]);
+	DrawRenderItems(mCommandList.Get(), mRitemLayer[(int)RenderLayer::Transparent]);
+
+	mCommandList->OMSetStencilRef(2);
+	mCommandList->SetPipelineState(mPSOs["depthComplexity1"].Get());
+	DrawRenderItems(mCommandList.Get(), mRitemLayer[(int)RenderLayer::Opaque]);
+	DrawRenderItems(mCommandList.Get(), mRitemLayer[(int)RenderLayer::AlphaTested]);
+	DrawRenderItems(mCommandList.Get(), mRitemLayer[(int)RenderLayer::Transparent]);
+
+	mCommandList->OMSetStencilRef(3);
+	mCommandList->SetPipelineState(mPSOs["depthComplexity2"].Get());
+	DrawRenderItems(mCommandList.Get(), mRitemLayer[(int)RenderLayer::Opaque]);
+	DrawRenderItems(mCommandList.Get(), mRitemLayer[(int)RenderLayer::AlphaTested]);
+	DrawRenderItems(mCommandList.Get(), mRitemLayer[(int)RenderLayer::Transparent]);
+
+	mCommandList->OMSetStencilRef(4);
+	mCommandList->SetPipelineState(mPSOs["depthComplexity3"].Get());
+	DrawRenderItems(mCommandList.Get(), mRitemLayer[(int)RenderLayer::Opaque]);
+	DrawRenderItems(mCommandList.Get(), mRitemLayer[(int)RenderLayer::AlphaTested]);
+	DrawRenderItems(mCommandList.Get(), mRitemLayer[(int)RenderLayer::Transparent]);
+	// end
 
     // Indicate a state transition on the resource usage.
 	mCommandList->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::Transition(CurrentBackBuffer(),
@@ -655,14 +685,21 @@ void BlendApp::BuildShadersAndInputLayout()
 	const D3D_SHADER_MACRO alphaTestDefines[] =
 	{
 		"FOG", "1",
-		"ALPHA_TEST", "1",
+		"ALPHA_TEST", "0",
+		NULL, NULL
+	};
+
+	const D3D_SHADER_MACRO depthComplexityDefines[] =
+	{
+		"DEPTH_COMPLEXITY", "1",
 		NULL, NULL
 	};
 
 	mShaders["standardVS"] = d3dUtil::CompileShader(L"Shaders\\Default.hlsl", nullptr, "VS", "vs_5_0");
 	mShaders["opaquePS"] = d3dUtil::CompileShader(L"Shaders\\Default.hlsl", defines, "PS", "ps_5_0");
 	mShaders["alphaTestedPS"] = d3dUtil::CompileShader(L"Shaders\\Default.hlsl", alphaTestDefines, "PS", "ps_5_0");
-	
+	mShaders["depthComplexityPS"] = d3dUtil::CompileShader(L"Shaders\\Default.hlsl", depthComplexityDefines, "PS", "ps_5_0");
+
     mInputLayout =
     {
         { "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 0, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
@@ -852,26 +889,36 @@ void BlendApp::BuildPSOs()
 		reinterpret_cast<BYTE*>(mShaders["opaquePS"]->GetBufferPointer()),
 		mShaders["opaquePS"]->GetBufferSize()
 	};
+
+	// depth-stencil 
+	D3D12_DEPTH_STENCIL_DESC depthComplexityDSS;
+	depthComplexityDSS.DepthEnable = true;
+	depthComplexityDSS.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ALL;
+	depthComplexityDSS.DepthFunc = D3D12_COMPARISON_FUNC_LESS;
+	depthComplexityDSS.StencilEnable = true;
+	depthComplexityDSS.StencilReadMask = 0xff;
+	depthComplexityDSS.StencilWriteMask = 0xff;
+
+	depthComplexityDSS.FrontFace.StencilFailOp = D3D12_STENCIL_OP_KEEP;
+	depthComplexityDSS.FrontFace.StencilDepthFailOp = D3D12_STENCIL_OP_KEEP;
+	depthComplexityDSS.FrontFace.StencilPassOp = D3D12_STENCIL_OP_INCR_SAT;
+	depthComplexityDSS.FrontFace.StencilFunc = D3D12_COMPARISON_FUNC_ALWAYS;
+
+	// We are not rendering backfacing polygons, so these settings do not matter.
+	depthComplexityDSS.BackFace.StencilFailOp = D3D12_STENCIL_OP_KEEP;
+	depthComplexityDSS.BackFace.StencilDepthFailOp = D3D12_STENCIL_OP_KEEP;
+	depthComplexityDSS.BackFace.StencilPassOp = D3D12_STENCIL_OP_INCR_SAT;
+	depthComplexityDSS.BackFace.StencilFunc = D3D12_COMPARISON_FUNC_ALWAYS;
+
 	opaquePsoDesc.RasterizerState = CD3DX12_RASTERIZER_DESC(D3D12_DEFAULT);
+	opaquePsoDesc.BlendState = CD3DX12_BLEND_DESC(D3D12_DEFAULT);
+
 	// viktorhe
-
-	D3D12_RENDER_TARGET_BLEND_DESC depthComplexityBlendDesc;
-	depthComplexityBlendDesc.BlendEnable = true;
-	depthComplexityBlendDesc.LogicOpEnable = false;
-	depthComplexityBlendDesc.SrcBlend = D3D12_BLEND_ONE;
-	depthComplexityBlendDesc.DestBlend = D3D12_BLEND_ONE;
-	depthComplexityBlendDesc.BlendOp = D3D12_BLEND_OP_ADD;
-	depthComplexityBlendDesc.SrcBlendAlpha = D3D12_BLEND_ONE;
-	depthComplexityBlendDesc.DestBlendAlpha = D3D12_BLEND_ONE;
-	depthComplexityBlendDesc.BlendOpAlpha = D3D12_BLEND_OP_ADD;
-	depthComplexityBlendDesc.LogicOp = D3D12_LOGIC_OP_NOOP;
-	depthComplexityBlendDesc.RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
-
-	//opaquePsoDesc.BlendState = CD3DX12_BLEND_DESC(D3D12_DEFAULT);
-	opaquePsoDesc.BlendState.RenderTarget[0] = depthComplexityBlendDesc;
+	// opaquePsoDesc.DepthStencilState = CD3DX12_DEPTH_STENCIL_DESC(D3D12_DEFAULT);
+	opaquePsoDesc.DepthStencilState = depthComplexityDSS;
+	opaquePsoDesc.BlendState.RenderTarget[0].RenderTargetWriteMask = 0;
 	// viktorhe end
 
-	opaquePsoDesc.DepthStencilState = CD3DX12_DEPTH_STENCIL_DESC(D3D12_DEFAULT);
 	opaquePsoDesc.SampleMask = UINT_MAX;
 	opaquePsoDesc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
 	opaquePsoDesc.NumRenderTargets = 1;
@@ -887,19 +934,24 @@ void BlendApp::BuildPSOs()
 
 	D3D12_GRAPHICS_PIPELINE_STATE_DESC transparentPsoDesc = opaquePsoDesc;
 
-	//D3D12_RENDER_TARGET_BLEND_DESC transparencyBlendDesc;
-	//transparencyBlendDesc.BlendEnable = true;
-	//transparencyBlendDesc.LogicOpEnable = false;
-	//transparencyBlendDesc.SrcBlend = D3D12_BLEND_SRC_ALPHA;
-	//transparencyBlendDesc.DestBlend = D3D12_BLEND_INV_SRC_ALPHA;
-	//transparencyBlendDesc.BlendOp = D3D12_BLEND_OP_ADD;
-	//transparencyBlendDesc.SrcBlendAlpha = D3D12_BLEND_ONE;
-	//transparencyBlendDesc.DestBlendAlpha = D3D12_BLEND_ZERO;
-	//transparencyBlendDesc.BlendOpAlpha = D3D12_BLEND_OP_ADD;
-	//transparencyBlendDesc.LogicOp = D3D12_LOGIC_OP_NOOP;
-	//transparencyBlendDesc.RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
+	D3D12_RENDER_TARGET_BLEND_DESC transparencyBlendDesc;
+	transparencyBlendDesc.BlendEnable = true;
+	transparencyBlendDesc.LogicOpEnable = false;
+	transparencyBlendDesc.SrcBlend = D3D12_BLEND_SRC_ALPHA;
+	transparencyBlendDesc.DestBlend = D3D12_BLEND_INV_SRC_ALPHA;
+	transparencyBlendDesc.BlendOp = D3D12_BLEND_OP_ADD;
+	transparencyBlendDesc.SrcBlendAlpha = D3D12_BLEND_ONE;
+	transparencyBlendDesc.DestBlendAlpha = D3D12_BLEND_ZERO;
+	transparencyBlendDesc.BlendOpAlpha = D3D12_BLEND_OP_ADD;
+	transparencyBlendDesc.LogicOp = D3D12_LOGIC_OP_NOOP;
 
-	transparentPsoDesc.BlendState.RenderTarget[0] = depthComplexityBlendDesc;
+	// viktorhe
+	//transparencyBlendDesc.RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
+	transparencyBlendDesc.RenderTargetWriteMask = 0;
+	// viktorhe end
+
+	transparentPsoDesc.DepthStencilState = depthComplexityDSS;
+	transparentPsoDesc.BlendState.RenderTarget[0] = transparencyBlendDesc;
 	ThrowIfFailed(md3dDevice->CreateGraphicsPipelineState(&transparentPsoDesc, IID_PPV_ARGS(&mPSOs["transparent"])));
 
 	//
@@ -912,8 +964,54 @@ void BlendApp::BuildPSOs()
 		reinterpret_cast<BYTE*>(mShaders["alphaTestedPS"]->GetBufferPointer()),
 		mShaders["alphaTestedPS"]->GetBufferSize()
 	};
+
+	transparentPsoDesc.DepthStencilState = depthComplexityDSS;
 	alphaTestedPsoDesc.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
 	ThrowIfFailed(md3dDevice->CreateGraphicsPipelineState(&alphaTestedPsoDesc, IID_PPV_ARGS(&mPSOs["alphaTested"])));
+
+	// PSO for depth-complexity render
+	D3D12_GRAPHICS_PIPELINE_STATE_DESC depthComplexityPsoDesc0 = opaquePsoDesc;
+
+	depthComplexityPsoDesc0.PS =
+	{
+		reinterpret_cast<BYTE*>(mShaders["depthComplexityPS"]->GetBufferPointer()),
+		mShaders["depthComplexityPS"]->GetBufferSize()
+	};
+
+	D3D12_DEPTH_STENCIL_DESC renderDepthComplexity0;
+	renderDepthComplexity0.DepthEnable = false;
+	renderDepthComplexity0.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ALL;
+	renderDepthComplexity0.DepthFunc = D3D12_COMPARISON_FUNC_LESS;
+	renderDepthComplexity0.StencilEnable = true;
+	renderDepthComplexity0.StencilReadMask = 0xff;
+	renderDepthComplexity0.StencilWriteMask = 0xff;
+
+	renderDepthComplexity0.FrontFace.StencilFailOp = D3D12_STENCIL_OP_KEEP;
+	renderDepthComplexity0.FrontFace.StencilDepthFailOp = D3D12_STENCIL_OP_KEEP;
+	renderDepthComplexity0.FrontFace.StencilPassOp = D3D12_STENCIL_OP_KEEP;
+	renderDepthComplexity0.FrontFace.StencilFunc = D3D12_COMPARISON_FUNC_EQUAL;
+
+	renderDepthComplexity0.BackFace.StencilFailOp = D3D12_STENCIL_OP_KEEP;
+	renderDepthComplexity0.BackFace.StencilDepthFailOp = D3D12_STENCIL_OP_KEEP;
+	renderDepthComplexity0.BackFace.StencilPassOp = D3D12_STENCIL_OP_KEEP;
+	renderDepthComplexity0.BackFace.StencilFunc = D3D12_COMPARISON_FUNC_EQUAL;
+
+	depthComplexityPsoDesc0.DepthStencilState = renderDepthComplexity0;
+	depthComplexityPsoDesc0.BlendState = CD3DX12_BLEND_DESC(D3D12_DEFAULT);
+	depthComplexityPsoDesc0.BlendState.RenderTarget[0].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_RED;
+	ThrowIfFailed(md3dDevice->CreateGraphicsPipelineState(&depthComplexityPsoDesc0, IID_PPV_ARGS(&mPSOs["depthComplexity0"])));
+
+	D3D12_GRAPHICS_PIPELINE_STATE_DESC depthComplexityPsoDesc1 = depthComplexityPsoDesc0;
+	depthComplexityPsoDesc1.BlendState.RenderTarget[0].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_GREEN;
+	ThrowIfFailed(md3dDevice->CreateGraphicsPipelineState(&depthComplexityPsoDesc1, IID_PPV_ARGS(&mPSOs["depthComplexity1"])));
+
+	D3D12_GRAPHICS_PIPELINE_STATE_DESC depthComplexityPsoDesc2 = depthComplexityPsoDesc0;
+	depthComplexityPsoDesc1.BlendState.RenderTarget[0].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_BLUE;
+	ThrowIfFailed(md3dDevice->CreateGraphicsPipelineState(&depthComplexityPsoDesc1, IID_PPV_ARGS(&mPSOs["depthComplexity2"])));
+
+	D3D12_GRAPHICS_PIPELINE_STATE_DESC depthComplexityPsoDesc3 = depthComplexityPsoDesc0;
+	depthComplexityPsoDesc1.BlendState.RenderTarget[0].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
+	ThrowIfFailed(md3dDevice->CreateGraphicsPipelineState(&depthComplexityPsoDesc1, IID_PPV_ARGS(&mPSOs["depthComplexity3"])));
 }
 
 void BlendApp::BuildFrameResources()
