@@ -1,4 +1,4 @@
-//***************************************************************************************
+﻿//***************************************************************************************
 // VecAddCSApp.cpp by Frank Luna (C) 2015 All Rights Reserved.
 //***************************************************************************************
 
@@ -15,12 +15,13 @@ using namespace DirectX::PackedVector;
 #pragma comment(lib, "d3dcompiler.lib")
 #pragma comment(lib, "D3D12.lib")
 
+#define PI 3.14159265
+
 const int gNumFrameResources = 3;
 
 struct Data
 {
-	XMFLOAT3 v1;
-	XMFLOAT2 v2;
+	XMFLOAT3 v;
 };
 
 // Lightweight structure stores parameters to draw a shape.  This will
@@ -123,7 +124,7 @@ private:
 	// Render items divided by PSO.
 	std::vector<RenderItem*> mRitemLayer[(int)RenderLayer::Count];
 
-	const int NumDataElements = 32;
+	const int NumDataElements = 64;
 
 	ComPtr<ID3D12Resource> mInputBufferA = nullptr;
 	ComPtr<ID3D12Resource> mInputUploadBufferA = nullptr;
@@ -347,8 +348,8 @@ void VecAddCSApp::DoComputeWork()
 	mCommandList->SetComputeRootSignature(mRootSignature.Get());
 
 	mCommandList->SetComputeRootShaderResourceView(0, mInputBufferA->GetGPUVirtualAddress());
-	mCommandList->SetComputeRootShaderResourceView(1, mInputBufferB->GetGPUVirtualAddress());
-	mCommandList->SetComputeRootUnorderedAccessView(2, mOutputBuffer->GetGPUVirtualAddress());
+	//mCommandList->SetComputeRootShaderResourceView(1, mInputBufferB->GetGPUVirtualAddress());
+	mCommandList->SetComputeRootUnorderedAccessView(1, mOutputBuffer->GetGPUVirtualAddress());
  
 	mCommandList->Dispatch(1, 1, 1);
 
@@ -372,15 +373,14 @@ void VecAddCSApp::DoComputeWork()
 	FlushCommandQueue();
 
 	// Map the data so we can read it on CPU.
-	Data* mappedData = nullptr;
+	float* mappedData = nullptr;
 	ThrowIfFailed(mReadBackBuffer->Map(0, nullptr, reinterpret_cast<void**>(&mappedData)));
 
 	std::ofstream fout("results.txt");
 
 	for(int i = 0; i < NumDataElements; ++i)
 	{
-		fout << "(" << mappedData[i].v1.x << ", " << mappedData[i].v1.y << ", " << mappedData[i].v1.z <<
-			", " << mappedData[i].v2.x << ", " << mappedData[i].v2.y << ")" << std::endl;
+		fout << i << ": (" << mappedData[i] << ")" << std::endl;
 	}
 
 	mReadBackBuffer->Unmap(0, nullptr);
@@ -388,34 +388,31 @@ void VecAddCSApp::DoComputeWork()
 
 void VecAddCSApp::BuildBuffers()
 {
-	// Generate some data.
-	std::vector<Data> dataA(NumDataElements);
-	std::vector<Data> dataB(NumDataElements);
-	for(int i = 0; i < NumDataElements; ++i)
-	{
-		dataA[i].v1 = XMFLOAT3(i, i, i);
-		dataA[i].v2 = XMFLOAT2(i, 0);
+	std::vector<Data> randomVecArr;
+	// 球坐标构造长度[1,10],xyz分量随机的向量
+	for (int i = 0; i < NumDataElements; i++) {
+		//srand(static_cast <unsigned> (time(0)));
+		float randLen = 1 + static_cast <float> (rand()) / (static_cast <float> (RAND_MAX / 9));
+		float randTheta = static_cast <float> (rand()) / (static_cast <float> (RAND_MAX / 2));
+		float randPhi = static_cast <float> (rand()) / (static_cast <float> (RAND_MAX / 2));
+		XMFLOAT3 randVec = XMFLOAT3(randLen * cos(randTheta * PI) * cos(randPhi * PI),
+									randLen * cos(randTheta * PI) * sin(randPhi * PI),
+									randLen * sin(randTheta * PI));
+		Data data;
+		data.v = randVec;
 
-		dataB[i].v1 = XMFLOAT3(-i, i, 0.0f);
-		dataB[i].v2 = XMFLOAT2(0, -i);
+		randomVecArr.push_back(data);
 	}
 
-	UINT64 byteSize = dataA.size()*sizeof(Data);
+	UINT64 byteSize = randomVecArr.size() * sizeof(Data);
 
 	// Create some buffers to be used as SRVs.
 	mInputBufferA = d3dUtil::CreateDefaultBuffer(
 		md3dDevice.Get(),
 		mCommandList.Get(),
-		dataA.data(),
+		randomVecArr.data(),
 		byteSize,
 		mInputUploadBufferA);
-
-	mInputBufferB = d3dUtil::CreateDefaultBuffer(
-		md3dDevice.Get(),
-		mCommandList.Get(),
-		dataB.data(),
-		byteSize,
-		mInputUploadBufferB);
 
 	// Create the buffer that will be a UAV.
 	ThrowIfFailed(md3dDevice->CreateCommittedResource(
@@ -438,15 +435,14 @@ void VecAddCSApp::BuildBuffers()
 void VecAddCSApp::BuildRootSignature()
 {
     // Root parameter can be a table, root descriptor or root constants.
-    CD3DX12_ROOT_PARAMETER slotRootParameter[3];
+    CD3DX12_ROOT_PARAMETER slotRootParameter[2];
 
 	// Perfomance TIP: Order from most frequent to least frequent.
 	slotRootParameter[0].InitAsShaderResourceView(0);
-    slotRootParameter[1].InitAsShaderResourceView(1);
-    slotRootParameter[2].InitAsUnorderedAccessView(0);
+    slotRootParameter[1].InitAsUnorderedAccessView(0);
 
     // A root signature is an array of root parameters.
-	CD3DX12_ROOT_SIGNATURE_DESC rootSigDesc(3, slotRootParameter,
+	CD3DX12_ROOT_SIGNATURE_DESC rootSigDesc(2, slotRootParameter,
 		0, nullptr,
 		D3D12_ROOT_SIGNATURE_FLAG_NONE);
 
